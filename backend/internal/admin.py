@@ -10,6 +10,7 @@ router = APIRouter()
 
 class Admin(BaseModel):
     admin_id: int
+    username: str
     name: str
     email: str
     hashed_password: str
