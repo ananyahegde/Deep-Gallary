@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from internal.admin import router as admin_router
+from routers.admin import router as admin_router
 from routers.image import router as image_router
 from routers.project import router as project_router
 
