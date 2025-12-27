@@ -148,6 +148,9 @@ async def patch_admin(
     if data.username:
         await verify_unique_username(data.username)
 
+    if data.email:
+        await verify_unique_email(data.email)
+
     updated_data = data.model_dump(exclude_unset=True)
 
     if not updated_data:
