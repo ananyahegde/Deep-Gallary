@@ -1,10 +1,11 @@
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from pymongo.errors import DuplicateKeyError
 from typing import Optional, Annotated
 import re
 from database import admin_collection
+from dependencies.admin_dependencies import get_admin_or_404, verify_unique_username
 from dependencies.auth import get_password_hash
 
 router = APIRouter()
@@ -91,20 +92,14 @@ async def get_admin():
 
 
 @router.get("/admins/{id}")
-async def get_admin_by_id(id: int):
-    admin_doc = await admin_collection.find_one({"admin_id": id})
-    if not admin_doc:
-        raise HTTPException(status_code=404, detail="Admin not found")
-    admin_doc["_id"] = str(admin_doc["_id"])
-
+async def get_admin_by_id(admin_doc: dict = Depends(get_admin_or_404)):
     admin = AdminPublic(**admin_doc)
     return admin
 
 
 @router.post("/admins")
 async def post_admin(admin: AdminCreate):
-    if await admin_collection.find_one({"username": admin.username}):
-            raise HTTPException(status_code=400, detail="Username is already taken")
+    await verify_unique_username(admin.username)
 
     last_admin = await admin_collection.find_one(
             sort=[("admin_id", -1)]
@@ -124,7 +119,9 @@ async def post_admin(admin: AdminCreate):
     try:
         result = await admin_collection.insert_one(document)
     except DuplicateKeyError:
-        raise HTTPException(status_code=400, detail="Username is already taken")
+        raise HTTPException(status_code=500, detail="Database constraint violation")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to create admin")
 
     document["_id"] = str(result.inserted_id)
     document = AdminPublic(**document)
@@ -136,7 +133,12 @@ async def post_admin(admin: AdminCreate):
 
 
 @router.patch("/admins/{id}")
-async def patch_admin(id: int, data: AdminUpdate):
+async def patch_admin(id: int, data: AdminUpdate,
+    admin_doc: dict = Depends(get_admin_or_404)
+):
+    if data.username:
+        await verify_unique_username(data.username)
+
     updated_data = data.model_dump(exclude_unset=True)
 
     if not updated_data:
@@ -144,18 +146,17 @@ async def patch_admin(id: int, data: AdminUpdate):
 
     updated_data["updated_at"] = datetime.utcnow()
 
-    result = await admin_collection.update_one(
+    try:
+        await admin_collection.update_one(
         {"admin_id": id},
         {"$set": updated_data}
     )
-
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Admin not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to update admin")
 
     document = await admin_collection.find_one({"admin_id": id})
     if document:
-        document["_id"] = str(document["_id"])
-
+        document = AdminPublic(**document)
 
     return {
             "message": "Admin updated successfully",
@@ -164,9 +165,6 @@ async def patch_admin(id: int, data: AdminUpdate):
 
 
 @router.delete("/admins/{id}")
-async def delete_admin(id: int):
-    result = await admin_collection.delete_one({"admin_id": id})
-    if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Admin not found")
-
+async def delete_admin(admin_doc: dict = Depends(get_admin_or_404)):
+    await admin_collection.delete_one({"admin_id": admin_doc["admin_id"]})
     return {"message": "Admin deleted successfully"}
