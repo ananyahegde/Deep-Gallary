@@ -5,7 +5,7 @@ from pymongo.errors import DuplicateKeyError
 from typing import Optional, Annotated
 import re
 from database import admin_collection
-from dependencies.admin_dependencies import get_admin_or_404, verify_unique_username
+from dependencies.admin_dependencies import get_admin_by_field_or_404, verify_unique_username
 from dependencies.auth import get_password_hash
 
 router = APIRouter()
@@ -82,19 +82,21 @@ class AdminInDB(BaseModel):
 
 
 @router.get("/admins")
-async def get_admin():
+async def get_admin(
+    username: Optional[str] = None,
+    email: Optional[str] = None
+):
+    admin_doc = await get_admin_by_field_or_404(username, email)
+
+    if admin_doc:
+        return [AdminPublic(**admin_doc)]
+
     admins = []
     cursor = admin_collection.find({})
     async for document in cursor:
         document["_id"] = str(document["_id"])
         admins.append(AdminPublic(**document))
     return admins
-
-
-@router.get("/admins/{id}")
-async def get_admin_by_id(admin_doc: dict = Depends(get_admin_or_404)):
-    admin = AdminPublic(**admin_doc)
-    return admin
 
 
 @router.post("/admins")
@@ -132,10 +134,16 @@ async def post_admin(admin: AdminCreate):
     }
 
 
-@router.patch("/admins/{id}")
-async def patch_admin(id: int, data: AdminUpdate,
-    admin_doc: dict = Depends(get_admin_or_404)
+@router.patch("/admins")
+async def patch_admin(
+    data: AdminUpdate,
+    username: Optional[str] = None,
+    email: Optional[str] = None,
+    admin_doc: dict = Depends(get_admin_by_field_or_404)
 ):
+    if not username and not email:
+        raise HTTPException(status_code=400, detail="Either username or email must be provided")
+
     if data.username:
         await verify_unique_username(data.username)
 
@@ -148,23 +156,34 @@ async def patch_admin(id: int, data: AdminUpdate,
 
     try:
         await admin_collection.update_one(
-        {"admin_id": id},
-        {"$set": updated_data}
-    )
+            {"admin_id": admin_doc["admin_id"]},
+            {"$set": updated_data}
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail="Failed to update admin")
 
-    document = await admin_collection.find_one({"admin_id": id})
+    document = await admin_collection.find_one({"admin_id": admin_doc["admin_id"]})
     if document:
-        document = AdminPublic(**document)
+        document["_id"] = str(document["_id"])
 
     return {
-            "message": "Admin updated successfully",
-            "data": document
-        }
+        "message": "Admin updated successfully",
+        "data": document
+    }
 
 
-@router.delete("/admins/{id}")
-async def delete_admin(admin_doc: dict = Depends(get_admin_or_404)):
+@router.delete("/admins")
+async def delete_admin(
+    username: Optional[str] = None,
+    email: Optional[str] = None,
+    admin_doc: dict = Depends(get_admin_by_field_or_404)
+):
+    # Mandate at least one
+    if not username and not email:
+        raise HTTPException(status_code=400, detail="Either username or email must be provided")
+
     await admin_collection.delete_one({"admin_id": admin_doc["admin_id"]})
     return {"message": "Admin deleted successfully"}
+
+# admin delete ain't done buddy.
+# when the user hits delete endpoint with an email, ask them to enter password.
