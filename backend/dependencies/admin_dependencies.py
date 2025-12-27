@@ -22,3 +22,7 @@ async def get_admin_by_field_or_404(username: Optional[str] = None, email: Optio
 async def verify_unique_username(username: str):
     if await admin_collection.find_one({"username": username}):
         raise HTTPException(status_code=400, detail="Username is already taken")
+
+async def verify_unique_email(email: str):
+    if await admin_collection.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email is already taken")

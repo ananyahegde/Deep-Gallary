@@ -5,7 +5,7 @@ from pymongo.errors import DuplicateKeyError
 from typing import Optional, Annotated
 import re
 from database import admin_collection
-from dependencies.admin_dependencies import get_admin_by_field_or_404, verify_unique_username
+from dependencies.admin_dependencies import get_admin_by_field_or_404, verify_unique_username, verify_unique_email
 from dependencies.auth import get_password_hash
 
 router = APIRouter()
@@ -102,6 +102,7 @@ async def get_admin(
 @router.post("/admins")
 async def post_admin(admin: AdminCreate):
     await verify_unique_username(admin.username)
+    await verify_unique_email(admin.email)
 
     last_admin = await admin_collection.find_one(
             sort=[("admin_id", -1)]
