@@ -41,6 +41,12 @@ class AdminInDB(Admin):
     hashed_password: str
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+
 password_hash = PasswordHash.recommended()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -119,7 +125,29 @@ async def login_for_access_token(
     return Token(access_token=access_token, token_type="bearer")
 
 
-@app.get("/admin/me/", response_model=Admin)
+@app.put("/admins/me/password")
+async def change_own_password(
+    password_data: PasswordChange,
+    current_admin: Annotated[AdminInDB, Depends(get_current_admin)]
+):
+    if not verify_password(password_data.current_password, current_admin.hashed_password):
+        raise HTTPException(status_code=400, detail="wrong password")
+
+    new_hashed = get_password_hash(password_data.new_password)
+
+    try: await admin_collection.update_one(
+        {"username": current_admin.username},
+        {"$set": {
+            "hashed_password": new_hashed,
+            "updated_at": datetime.utcnow()
+        }}
+    )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal Server error")
+
+    return {"message": "Admin updated successfully"}
+
+@app.get("/admins/me/", response_model=Admin)
 async def read_users_me(
     current_admin: Annotated[Admin, Depends(get_current_admin)],
 ):
