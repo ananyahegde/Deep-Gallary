@@ -1,19 +1,24 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, Field, field_validator
-from pymongo.errors import DuplicateKeyError
-from typing import Optional, Annotated
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
+from pydantic import BaseModel, Field, field_validator
+from typing import Annotated, Optional
 import re
 from database import admin_collection
-from dependencies.admin_dependencies import get_admin_by_field_or_404, verify_unique_username, verify_unique_email
-from dependencies.auth import get_password_hash
+from dependencies.admin_dependencies import (
+    get_admin_by_field_or_404,
+    verify_unique_username,
+    verify_unique_email,
+    save_admin_profile_image,
+    delete_admin_profile_image
+)
+from dependencies.auth import get_password_hash, verify_password
 
 router = APIRouter()
 
 class AdminBase(BaseModel):
     username: Annotated[str, Field(min_length=3, max_length=30)]
     name: Annotated[str, Field(min_length=2, max_length=50)]
-    email: EmailStr
+    email: str
     photo: Optional[str] = None
     description: Optional[str] = None
     contact: str
@@ -32,15 +37,37 @@ class AdminBase(BaseModel):
             raise ValueError("name can only contain letters and spaces")
         return v.strip() if v else v
 
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str):
+        if v is not None and not re.fullmatch(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", v):
+            raise ValueError("Not a valid email address")
+        return v.strip() if v else v
+
 
 class AdminCreate(AdminBase):
     password: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> None:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+
+        if not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one number")
+
+        if not re.search(r"[!@#$%^&*()_\-+=\[\]{};:'\",.<>/?\\|`~]", v):
+            raise ValueError("Password must contain at least one special character")
 
 
 class AdminUpdate(BaseModel):
     username: Optional[Annotated[str, Field(min_length=3, max_length=30)]] = None
     name: Optional[Annotated[str, Field(min_length=2, max_length=50)]] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     photo: Optional[str] = None
     description: Optional[str] = None
     contact: Optional[str] = None
@@ -71,7 +98,7 @@ class AdminInDB(BaseModel):
     admin_id: int
     username: str
     name: str
-    email: EmailStr
+    email: str
     created_at: datetime
     updated_at: datetime
     photo: Optional[str]
@@ -100,94 +127,121 @@ async def get_admin(
 
 
 @router.post("/admins")
-async def post_admin(admin: AdminCreate):
-    await verify_unique_username(admin.username)
-    await verify_unique_email(admin.email)
+async def post_admin(
+    username: str = Form(...),
+    name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    contact: str = Form(...),
+    description: Optional[str] = Form(None),
+    photo: Optional[UploadFile] = File(None)
+):
+    admin_data = AdminCreate(
+        username=username,
+        name=name,
+        email=email,
+        password=password,
+        contact=contact,
+        description=description
+    )
 
-    last_admin = await admin_collection.find_one(
-            sort=[("admin_id", -1)]
-        )
+    await verify_unique_username(admin_data.username)
+    await verify_unique_email(admin_data.email)
 
-    if last_admin is not None:
-        new_admin_id = last_admin["admin_id"] + 1
-    else:
-        new_admin_id = 1
+    last_admin = await admin_collection.find_one(sort=[("admin_id", -1)])
+    new_admin_id = last_admin["admin_id"] + 1 if last_admin else 1
 
-    document = admin.model_dump()
+    photo_path = None
+    if photo:
+        photo_path = await save_admin_profile_image(photo)
+
+    document = admin_data.model_dump()
     document["admin_id"] = new_admin_id
     document["hashed_password"] = get_password_hash(document.pop("password"))
+    document["photo"] = photo_path
     document["created_at"] = datetime.utcnow()
     document["updated_at"] = datetime.utcnow()
 
     try:
         result = await admin_collection.insert_one(document)
-    except DuplicateKeyError:
-        raise HTTPException(status_code=500, detail="Database constraint violation")
     except Exception as e:
+        if photo_path:
+            delete_admin_profile_image(photo_path)
         raise HTTPException(status_code=500, detail="Failed to create admin")
 
     document["_id"] = str(result.inserted_id)
-    document = AdminPublic(**document)
-
     return {
         "message": "Admin created successfully",
-        "admin": document
+        "admin": AdminPublic(**document)
     }
 
 
 @router.patch("/admins")
 async def patch_admin(
-    data: AdminUpdate,
-    username: Optional[str] = None,
-    email: Optional[str] = None,
-    admin_doc: dict = Depends(get_admin_by_field_or_404)
+    username: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    new_username: Optional[str] = Form(None),
+    new_email: Optional[str] = Form(None),
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    contact: Optional[str] = Form(None),
+    photo: Optional[UploadFile] = File(None),
 ):
     if not username and not email:
-        raise HTTPException(status_code=400, detail="Either username or email must be provided")
+        raise HTTPException(400, "Either username or email must be provided")
 
-    if data.username:
-        await verify_unique_username(data.username)
+    admin_doc = await get_admin_by_field_or_404(username, email)
+    if not admin_doc:
+        raise HTTPException(404, "Admin not found")
 
-    if data.email:
-        await verify_unique_email(data.email)
+    updated_data = {}
 
-    updated_data = data.model_dump(exclude_unset=True)
+    if new_username and new_username != admin_doc["username"]:
+        await verify_unique_username(new_username)
+        updated_data["username"] = new_username
+
+    if new_email and new_email != admin_doc["email"]:
+        await verify_unique_email(new_email)
+        updated_data["email"] = new_email
+
+    if photo:
+        new_photo_path = await save_admin_profile_image(photo)
+        if admin_doc.get("photo"):
+            delete_admin_profile_image(admin_doc["photo"])
+        updated_data["photo"] = new_photo_path
 
     if not updated_data:
-        raise HTTPException(status_code=400, detail="No fields provided for update")
+        raise HTTPException(400, "No fields provided for update")
 
     updated_data["updated_at"] = datetime.utcnow()
 
-    try:
-        await admin_collection.update_one(
-            {"admin_id": admin_doc["admin_id"]},
-            {"$set": updated_data}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Failed to update admin")
+    await admin_collection.update_one(
+        {"admin_id": admin_doc["admin_id"]},
+        {"$set": updated_data}
+    )
 
     document = await admin_collection.find_one({"admin_id": admin_doc["admin_id"]})
     if document:
         document["_id"] = str(document["_id"])
 
-    return {
-        "message": "Admin updated successfully",
-        "data": document
-    }
+    return {"message": "Admin updated successfully", "data": document}
 
 
 @router.delete("/admins")
 async def delete_admin(
+    password: str,
     username: Optional[str] = None,
     email: Optional[str] = None,
     admin_doc: dict = Depends(get_admin_by_field_or_404)
 ):
-    # Mandate at least one
     if not username and not email:
         raise HTTPException(status_code=400, detail="Either username or email must be provided")
 
+    if not verify_password(password, admin_doc["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Incorrect password")
+
+    if admin_doc.get("photo"):
+        delete_admin_profile_image(admin_doc["photo"])
+
     await admin_collection.delete_one({"admin_id": admin_doc["admin_id"]})
     return {"message": "Admin deleted successfully"}
-
-# admin delete ain't done buddy.
-# when the user hits delete endpoint with an email, ask them to enter password.

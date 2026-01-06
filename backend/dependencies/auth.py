@@ -7,7 +7,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import jwt
 from jwt.exceptions import InvalidTokenError
 from pwdlib import PasswordHash
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Annotated, Optional
 
 load_dotenv()
@@ -26,6 +26,7 @@ class TokenData(BaseModel):
 
 
 class Admin(BaseModel):
+    id: str = Field(alias="_id")
     admin_id: int
     username: str
     name: str
@@ -35,6 +36,9 @@ class Admin(BaseModel):
     photo: Optional[str] = None
     description: Optional[str] = None
     contact: str
+
+    class Config:
+            populate_by_name = True
 
 
 class AdminInDB(Admin):
@@ -64,7 +68,7 @@ def get_password_hash(password):
 async def get_admin(username: str):
     admin_dict = await admin_collection.find_one({"username": username})
     if admin_dict:
-        admin_dict.pop("_id", None)
+        admin_dict["_id"] = str(admin_dict["_id"])
         return AdminInDB(**admin_dict)
     return None
 
