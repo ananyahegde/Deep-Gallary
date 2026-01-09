@@ -1,14 +1,16 @@
 import os
-from database import admin_collection
 from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from typing import Annotated, Optional
+
 import jwt
 from jwt.exceptions import InvalidTokenError
+from dotenv import load_dotenv
 from pwdlib import PasswordHash
 from pydantic import BaseModel, Field
-from typing import Annotated, Optional
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
+from database import admin_collection
 
 load_dotenv()
 
@@ -16,13 +18,14 @@ SECRET_KEY = os.getenv("SECRET_KEY", "fallback_secret_key")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_DAYS = int(os.getenv("ACCESS_TOKEN_EXPIRE_DAYS", "7"))
 
+router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+password_hash = PasswordHash.recommended()
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str
-
-
-class TokenData(BaseModel):
-    username: str | None = None
 
 
 class Admin(BaseModel):
@@ -38,7 +41,7 @@ class Admin(BaseModel):
     contact: str
 
     class Config:
-            populate_by_name = True
+        populate_by_name = True
 
 
 class AdminInDB(Admin):
@@ -50,27 +53,21 @@ class PasswordChange(BaseModel):
     new_password: str
 
 
-
-password_hash = PasswordHash.recommended()
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-app = FastAPI()
-
-
-def verify_password(plain_password, hashed_password):
+def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
-def get_password_hash(password):
+
+def get_password_hash(password: str) -> str:
     return password_hash.hash(password)
 
 
-async def get_admin(username: str):
+async def get_admin(username: str) -> Optional[AdminInDB]:
     admin_dict = await admin_collection.find_one({"username": username})
-    if admin_dict:
-        admin_dict["_id"] = str(admin_dict["_id"])
-        return AdminInDB(**admin_dict)
-    return None
+    if not admin_dict:
+        return None
+    admin_dict["_id"] = str(admin_dict["_id"])
+    return AdminInDB(**admin_dict)
+
 
 async def authenticate_admin(username: str, password: str):
     admin = await get_admin(username)
@@ -81,18 +78,18 @@ async def authenticate_admin(username: str, password: str):
     return admin
 
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    expire = datetime.now(timezone.utc) + (
+        expires_delta or timedelta(minutes=15)
+    )
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-async def get_current_admin(token: Annotated[str, Depends(oauth2_scheme)]):
+async def get_current_admin(
+    token: Annotated[str, Depends(oauth2_scheme)]
+) -> AdminInDB:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -105,16 +102,17 @@ async def get_current_admin(token: Annotated[str, Depends(oauth2_scheme)]):
             raise credentials_exception
     except InvalidTokenError:
         raise credentials_exception
-    admin = await get_admin(username=username)
+
+    admin = await get_admin(username)
     if admin is None:
         raise credentials_exception
     return admin
 
 
-@app.post("/token")
+@router.post("/token", response_model=Token)
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
-) -> Token:
+):
     admin = await authenticate_admin(form_data.username, form_data.password)
     if not admin:
         raise HTTPException(
@@ -122,37 +120,43 @@ async def login_for_access_token(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS)
+
     access_token = create_access_token(
-        data={"sub": admin.username}, expires_delta=access_token_expires
+        data={"sub": admin.username},
+        expires_delta=timedelta(days=ACCESS_TOKEN_EXPIRE_DAYS),
     )
-    return Token(access_token=access_token, token_type="bearer")
+
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
-@app.put("/admins/me/password")
+@router.get("/admins/me/", response_model=Admin)
+async def read_admin_me(
+    current_admin: Annotated[Admin, Depends(get_current_admin)],
+):
+    return current_admin
+
+
+@router.put("/admins/me/password")
 async def change_own_password(
     password_data: PasswordChange,
-    current_admin: Annotated[AdminInDB, Depends(get_current_admin)]
+    current_admin: Annotated[AdminInDB, Depends(get_current_admin)],
 ):
-    if not verify_password(password_data.current_password, current_admin.hashed_password):
+    if not verify_password(
+        password_data.current_password,
+        current_admin.hashed_password,
+    ):
         raise HTTPException(status_code=400, detail="wrong password")
 
     new_hashed = get_password_hash(password_data.new_password)
 
-    try: await admin_collection.update_one(
+    await admin_collection.update_one(
         {"username": current_admin.username},
-        {"$set": {
-            "hashed_password": new_hashed,
-            "updated_at": datetime.utcnow()
-        }}
+        {
+            "$set": {
+                "hashed_password": new_hashed,
+                "updated_at": datetime.utcnow(),
+            }
+        },
     )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Internal Server error")
 
     return {"message": "Admin updated successfully"}
-
-@app.get("/admins/me/", response_model=Admin)
-async def read_users_me(
-    current_admin: Annotated[Admin, Depends(get_current_admin)],
-):
-    return current_admin
