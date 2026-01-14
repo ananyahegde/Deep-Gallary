@@ -7,6 +7,7 @@ from transformers import (
     CLIPModel,
     ViTImageProcessor,
     ViTForImageClassification,
+    ViTModel,
     BatchEncoding,
 )
 import os
@@ -24,6 +25,7 @@ clip_processor: Optional[CLIPProcessor] = None
 clip_model: Optional[CLIPModel] = None
 vit_processor: Optional[ViTImageProcessor] = None
 vit_model: Optional[ViTForImageClassification] = None
+vit_backbone: Optional[ViTModel] = None
 
 CLIP_CATEGORIES = [
     "architecture", "buildings", "urban", "interior",
@@ -39,11 +41,12 @@ class MLServiceError(Exception):
     pass
 
 def load_models() -> None:
-    global blip_processor, blip_model, clip_processor, clip_model, vit_processor, vit_model
+    global blip_processor, blip_model
+    global clip_processor, clip_model
+    global vit_processor, vit_model, vit_backbone
 
     try:
         if blip_model is None:
-            print("Loading BLIP model...")
             blip_processor = BlipProcessor.from_pretrained(
                 "Salesforce/blip-image-captioning-base",
                 cache_dir=MODEL_DIR,
@@ -53,10 +56,8 @@ def load_models() -> None:
                 cache_dir=MODEL_DIR,
             )
             blip_model.to(device)
-            print("BLIP model loaded successfully")
 
         if clip_model is None:
-            print("Loading CLIP model...")
             clip_processor = CLIPProcessor.from_pretrained(
                 "openai/clip-vit-base-patch32",
                 cache_dir=MODEL_DIR,
@@ -66,10 +67,8 @@ def load_models() -> None:
                 cache_dir=MODEL_DIR,
             )
             clip_model.to(device)
-            print("CLIP model loaded successfully")
 
         if vit_model is None:
-            print("Loading ViT model...")
             vit_processor = ViTImageProcessor.from_pretrained(
                 "google/vit-base-patch16-224",
                 cache_dir=MODEL_DIR,
@@ -79,15 +78,22 @@ def load_models() -> None:
                 cache_dir=MODEL_DIR,
             )
             vit_model.to(device)
-            print("ViT model loaded successfully")
+
+        if vit_backbone is None:
+            vit_backbone = ViTModel.from_pretrained(
+                "google/vit-base-patch16-224",
+                cache_dir=MODEL_DIR,
+                output_hidden_states=True,
+            )
+            vit_backbone.to(device)
+            vit_backbone.eval()
+
     except Exception as e:
         raise MLServiceError(f"Failed to load models: {str(e)}")
 
 def clean_vit_label(label: str) -> str:
     label = label.replace("_", " ")
-
-    label = re.sub(r',.*$', '', label)
-
+    label = re.sub(r",.*$", "", label)
     label = label.strip()
 
     words = label.split()
@@ -207,3 +213,30 @@ def predict_tags(image_path: str) -> List[str]:
         raise
     except Exception as e:
         raise MLServiceError(f"Failed to predict tags: {str(e)}")
+
+def extract_vit_embedding(image_path: str) -> List[float]:
+    try:
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"Image file not found: {image_path}")
+
+        load_models()
+
+        assert vit_processor is not None
+        assert vit_backbone is not None
+
+        image = Image.open(image_path).convert("RGB")
+        inputs = vit_processor(images=image, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = vit_backbone(**inputs)
+
+        penultimate = outputs.hidden_states[-2]
+        cls_embedding = penultimate[:, 0, :]
+        embedding = torch.nn.functional.normalize(cls_embedding, dim=1)
+
+        return embedding.squeeze(0).cpu().tolist()
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise MLServiceError(f"Failed to extract ViT embedding: {str(e)}")

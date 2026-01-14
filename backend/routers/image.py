@@ -1,153 +1,182 @@
 from bson import ObjectId
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
-from typing import Annotated, Optional
-from database import image_collection, project_collection, admin_collection
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from database import image_collection, project_collection
 from dependencies.auth import get_current_admin, AdminInDB
-from dependencies.project_dependencies import AdminInfo, get_admin_info_by_id
+from dependencies.image_dependencies import (
+    get_image_by_id_or_404,
+    get_admin_info_by_id,
+    get_project_info_by_id,
+    get_image_with_relations,
+    AdminInfo,
+    ProjectInfo
+)
+from services.model_services import (
+    generate_caption,
+    predict_tags,
+    extract_vit_embedding,
+)
+from PIL import Image
+import os
+import uuid
 
 router = APIRouter()
 
+UPLOAD_DIR = "uploads/images"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 class ImageMetadata(BaseModel):
-    filename: Annotated[str, Field(min_length=1, max_length=255)]
-    height: Annotated[int, Field(gt=0, le=50000)]
-    width: Annotated[int, Field(gt=0, le=50000)]
-    filesize: Annotated[int, Field(gt=0)]
+    filename: str
+    height: int
+    width: int
+    filesize: int
 
-class ImageBase(BaseModel):
-    title: Optional[Annotated[str, Field(max_length=200)]] = None
-    embeddings: list[float] = []
-    caption: Optional[Annotated[str, Field(max_length=1000)]] = None
-    tags: Optional[Annotated[list[str], Field(max_length=10)]] = None
-    metadata: ImageMetadata
-
-class ImageUpdate(BaseModel):
-    title: Optional[str] = None
-    caption: Optional[str] = None
-    tags: Optional[list[str]] = None
-
-class ProjectInfo(BaseModel):
-    id: str
-    project_name: str
-
-class ImagePublic(ImageBase):
+class ImagePublic(BaseModel):
     id: str = Field(alias="_id")
+    project_id: str
+    path: str
+    title: Optional[str] = None
+    ai_generated_caption: Optional[str] = None
+    tags: List[str] = []
+    embeddings: Optional[List[float]] = None
+    metadata: ImageMetadata
     admin: Optional[AdminInfo] = None
     project: Optional[ProjectInfo] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         populate_by_name = True
 
+class ImageUpdate(BaseModel):
+    title: Optional[str] = None
+    ai_generated_caption: Optional[str] = None
+    tags: Optional[List[str]] = None
+
 @router.get("/images")
-async def get_image():
-    try:
-        images = []
-        cursor = image_collection.find({})
-        async for document in cursor:
-            try:
-                document["_id"] = str(document["_id"])
+async def get_images():
+    images = []
+    cursor = image_collection.find({})
+    async for doc in cursor:
+        doc["_id"] = str(doc["_id"])
+        doc["project_id"] = str(doc["project_id"])
 
-                admin_info = await get_admin_info_by_id(document["admin_id"])
-                if admin_info:
-                    document["admin"] = admin_info
+        admin_info = await get_admin_info_by_id(doc.get("admin_id"))
+        project_info = await get_project_info_by_id(doc["project_id"])
 
-                project = await project_collection.find_one({"_id": ObjectId(document["project_id"])})
-                if project:
-                    document["project"] = ProjectInfo(
-                        id=str(project["_id"]),
-                        project_name=project["project_name"]
-                    )
+        if admin_info:
+            doc["admin"] = admin_info
+        if project_info:
+            doc["project"] = project_info
 
-                images.append(ImagePublic(**document))
-            except Exception:
-                continue
-        return images
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch images: {str(e)}")
+        images.append(ImagePublic(**doc))
+    return images
 
 @router.get("/images/{id}")
-async def get_image_by_id(id: str):
+async def get_image(id: str):
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid image ID")
+
+    doc = await get_image_with_relations(id)
+    doc["_id"] = str(doc["_id"])
+    doc["project_id"] = str(doc["project_id"])
+    return ImagePublic(**doc)
+
+@router.post("/images/ai-preview")
+async def ai_preview_image(file: UploadFile = File(...)):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+
+    contents = await file.read()
+    temp_path = f"/tmp/{uuid.uuid4()}"
+
+    with open(temp_path, "wb") as f:
+        f.write(contents)
+
     try:
-        if not ObjectId.is_valid(id):
-            raise HTTPException(status_code=400, detail="Invalid image ID format")
+        caption = generate_caption(temp_path)
+        tags = predict_tags(temp_path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
-        image_doc = await image_collection.find_one({"_id": ObjectId(id)})
-        if not image_doc:
-            raise HTTPException(status_code=404, detail="Image not found")
-
-        image_doc["_id"] = str(image_doc["_id"])
-
-        admin_info = await get_admin_info_by_id(image_doc["admin_id"])
-        if admin_info:
-            image_doc["admin"] = admin_info
-
-        project = await project_collection.find_one({"_id": ObjectId(image_doc["project_id"])})
-        if project:
-            image_doc["project"] = ProjectInfo(
-                id=str(project["_id"]),
-                project_name=project["project_name"]
-            )
-
-        return ImagePublic(**image_doc)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch image: {str(e)}")
+    return {"caption": caption, "tags": tags}
 
 @router.post("/images/{project_id}")
-async def post_image(
+async def upload_image(
     project_id: str,
-    image: ImageBase,
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    caption: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),
     current_admin: AdminInDB = Depends(get_current_admin)
 ):
-    try:
-        if not ObjectId.is_valid(project_id):
-            raise HTTPException(status_code=400, detail="Invalid project ID format")
+    if not ObjectId.is_valid(project_id):
+        raise HTTPException(status_code=400, detail="Invalid project ID")
 
-        project = await project_collection.find_one({"_id": ObjectId(project_id)})
-        if not project:
-            raise HTTPException(status_code=404, detail="Project not found")
+    project = await project_collection.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
 
-        if project["admin_id"] != str(current_admin.id):
-            raise HTTPException(status_code=403, detail="Not authorized to add images to this project")
+    if project["admin_id"] != str(current_admin.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
 
-        now = datetime.utcnow()
-        image_doc = {
-            "admin_id": str(current_admin.id),
-            "project_id": project_id,
-            "title": image.title,
-            "embeddings": image.embeddings,
-            "caption": image.caption,
-            "tags": image.tags,
-            "metadata": image.metadata.model_dump(),
-            "created_at": now,
-            "updated_at": now
-        }
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
 
-        result = await image_collection.insert_one(image_doc)
+    ext = file.filename.split(".")[-1].lower()
+    filename = f"{uuid.uuid4()}.{ext}"
+    disk_path = os.path.join(UPLOAD_DIR, filename)
+    public_path = f"/uploads/images/{filename}"
 
-        if not result.inserted_id:
-            raise HTTPException(status_code=500, detail="Failed to create image")
+    contents = await file.read()
+    filesize = len(contents)
 
-        image_doc["_id"] = str(result.inserted_id)
+    with open(disk_path, "wb") as f:
+        f.write(contents)
 
-        admin_info = await get_admin_info_by_id(str(current_admin.id))
-        if admin_info:
-            image_doc["admin"] = admin_info
+    img = Image.open(disk_path)
+    width, height = img.size
+    img.close()
 
-        image_doc["project"] = ProjectInfo(
-            id=str(project["_id"]),
-            project_name=project["project_name"]
-        )
+    embeddings = extract_vit_embedding(disk_path)
 
-        return ImagePublic(**image_doc)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create image: {str(e)}")
+    now = datetime.utcnow()
+
+    image_doc = {
+        "admin_id": str(current_admin.id),
+        "project_id": ObjectId(project_id),
+        "path": public_path,
+        "title": title,
+        "ai_generated_caption": caption,
+        "tags": tags.split(",") if tags else [],
+        "embeddings": embeddings,
+        "metadata": {
+            "filename": filename,
+            "height": height,
+            "width": width,
+            "filesize": filesize
+        },
+        "created_at": now,
+        "updated_at": now
+    }
+
+    result = await image_collection.insert_one(image_doc)
+
+    image_doc["_id"] = str(result.inserted_id)
+    image_doc["project_id"] = str(image_doc["project_id"])
+
+    admin_info = await get_admin_info_by_id(image_doc["admin_id"])
+    if admin_info:
+        image_doc["admin"] = admin_info
+
+    project_info = await get_project_info_by_id(image_doc["project_id"])
+    if project_info:
+        image_doc["project"] = project_info
+
+    return ImagePublic(**image_doc)
 
 @router.patch("/images/{id}")
 async def patch_image(
@@ -155,75 +184,48 @@ async def patch_image(
     data: ImageUpdate,
     current_admin: AdminInDB = Depends(get_current_admin)
 ):
-    try:
-        if not ObjectId.is_valid(id):
-            raise HTTPException(status_code=400, detail="Invalid image ID format")
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid image ID")
 
-        image_doc = await image_collection.find_one({"_id": ObjectId(id)})
-        if not image_doc:
-            raise HTTPException(status_code=404, detail="Image not found")
+    image_doc = await get_image_by_id_or_404(id)
 
-        if image_doc["admin_id"] != str(current_admin.id):
-            raise HTTPException(status_code=403, detail="Not authorized to update this image")
+    if image_doc["admin_id"] != str(current_admin.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
 
-        update_data = data.model_dump(exclude_unset=True)
+    update_data = data.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
 
-        if not update_data:
-            raise HTTPException(status_code=400, detail="No fields to update")
+    update_data["updated_at"] = datetime.utcnow()
 
-        update_data["updated_at"] = datetime.utcnow()
+    await image_collection.update_one(
+        {"_id": ObjectId(id)},
+        {"$set": update_data}
+    )
 
-        result = await image_collection.update_one(
-            {"_id": ObjectId(id)},
-            {"$set": update_data}
-        )
-
-        if result.matched_count == 0:
-            raise HTTPException(status_code=404, detail="Image not found")
-
-        updated_image = await image_collection.find_one({"_id": ObjectId(id)})
-        updated_image["_id"] = str(updated_image["_id"])
-
-        admin_info = await get_admin_info_by_id(str(current_admin.id))
-        if admin_info:
-            updated_image["admin"] = admin_info
-
-        project = await project_collection.find_one({"_id": ObjectId(updated_image["project_id"])})
-        if project:
-            updated_image["project"] = ProjectInfo(
-                id=str(project["_id"]),
-                project_name=project["project_name"]
-            )
-
-        return ImagePublic(**updated_image)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update image: {str(e)}")
+    updated = await get_image_with_relations(id)
+    updated["_id"] = str(updated["_id"])
+    updated["project_id"] = str(updated["project_id"])
+    return ImagePublic(**updated)
 
 @router.delete("/images/{id}")
 async def delete_image(
     id: str,
     current_admin: AdminInDB = Depends(get_current_admin)
 ):
-    try:
-        if not ObjectId.is_valid(id):
-            raise HTTPException(status_code=400, detail="Invalid image ID format")
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid image ID")
 
-        image_doc = await image_collection.find_one({"_id": ObjectId(id)})
-        if not image_doc:
-            raise HTTPException(status_code=404, detail="Image not found")
+    image_doc = await get_image_by_id_or_404(id)
 
-        if image_doc["admin_id"] != str(current_admin.id):
-            raise HTTPException(status_code=403, detail="Not authorized to delete this image")
+    if image_doc["admin_id"] != str(current_admin.id):
+        raise HTTPException(status_code=403, detail="Not authorized")
 
-        result = await image_collection.delete_one({"_id": ObjectId(id)})
+    filename = image_doc["metadata"]["filename"]
+    disk_path = os.path.join(UPLOAD_DIR, filename)
 
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Image not found")
+    if os.path.exists(disk_path):
+        os.remove(disk_path)
 
-        return {"message": "Image deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete image: {str(e)}")
+    await image_collection.delete_one({"_id": ObjectId(id)})
+    return {"message": "Image deleted successfully"}
