@@ -1,6 +1,6 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from typing import Annotated, Optional
 import re
 from database import admin_collection
@@ -45,21 +45,28 @@ class AdminBase(BaseModel):
         return v.strip() if v else v
 
 
+
 class AdminCreate(AdminBase):
     password: str
 
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, v: str):
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters long")
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not re.search(r"\d", v):
-            raise ValueError("Password must contain at least one number")
-        if not re.search(r"[!@#$%^&*()_\-+=\[\]{};:'\",.<>/?\\|`~]", v):
-            raise ValueError("Password must contain at least one special character")
-        return v
+@field_validator("password", mode="before")
+@classmethod
+def validate_password(cls, v: str):
+    if not isinstance(v, str):
+        raise ValueError("Password must be a string")
+
+    v = v.strip()
+
+    if len(v) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if not re.search(r"[A-Z]", v):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r"\d", v):
+        raise ValueError("Password must contain at least one number")
+    if not re.search(r"[!@#$%^&*()_\-+=\[\]{};:'\",.<>/?\\|`~]", v):
+        raise ValueError("Password must contain at least one special character")
+
+    return v
 
 
 class AdminUpdate(BaseModel):
@@ -84,6 +91,13 @@ class AdminUpdate(BaseModel):
             raise ValueError("name can only contain letters and spaces")
         return v.strip() if v else v
 
+    @field_validator("contact")
+    @classmethod
+    def validate_contact(cls, v: str):
+        if not re.fullmatch(r"[0-9]{8,15}", v):
+            raise ValueError("Contact must contain only digits (8–15 characters)")
+        return v
+
 
 class AdminPublic(AdminBase):
     admin_id: Optional[Annotated[int, Field(gt=-1)]] = None
@@ -103,7 +117,6 @@ class AdminInDB(BaseModel):
     description: Optional[str]
     contact: str
     hashed_password: str
-
 
 
 @router.get("/admins")
@@ -134,14 +147,27 @@ async def post_admin(
     description: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None)
 ):
-    admin_data = AdminCreate(
-        username=username,
-        name=name,
-        email=email,
-        password=password,
-        contact=contact,
-        description=description
-    )
+    try:
+        admin_data = AdminCreate(
+            username=username,
+            name=name,
+            email=email,
+            password=password,
+            contact=contact,
+            description=description
+        )
+    except ValidationError as e:
+        cleaned_errors = []
+        for err in e.errors():
+            err = err.copy()
+            # Remove non-JSON-serializable ctx
+            if "ctx" in err:
+                err["ctx"] = {
+                    k: str(v) for k, v in err["ctx"].items()
+                }
+            cleaned_errors.append(err)
+
+        raise HTTPException(status_code=422, detail=cleaned_errors)
 
     await verify_unique_username(admin_data.username)
     await verify_unique_email(admin_data.email)
@@ -162,7 +188,7 @@ async def post_admin(
 
     try:
         result = await admin_collection.insert_one(document)
-    except Exception as e:
+    except Exception:
         if photo_path:
             delete_admin_profile_image(photo_path)
         raise HTTPException(status_code=500, detail="Failed to create admin")

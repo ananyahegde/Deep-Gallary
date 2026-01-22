@@ -21,6 +21,8 @@ from services.model_services import (
 from PIL import Image
 import os
 import uuid
+import numpy as np
+
 
 router = APIRouter()
 
@@ -56,23 +58,93 @@ class ImageUpdate(BaseModel):
     tags: Optional[List[str]] = None
 
 @router.get("/images")
-async def get_images():
-    images = []
-    cursor = image_collection.find({})
-    async for doc in cursor:
-        doc["_id"] = str(doc["_id"])
-        doc["project_id"] = str(doc["project_id"])
+async def get_images(project_id: Optional[str] = None):
+    try:
+        images = []
+        query = {}
 
-        admin_info = await get_admin_info_by_id(doc.get("admin_id"))
-        project_info = await get_project_info_by_id(doc["project_id"])
+        if project_id:
+            if not ObjectId.is_valid(project_id):
+                raise HTTPException(status_code=400, detail="Invalid project ID")
+            query["project_id"] = ObjectId(project_id)
 
-        if admin_info:
-            doc["admin"] = admin_info
-        if project_info:
-            doc["project"] = project_info
+        cursor = image_collection.find(query)
+        async for doc in cursor:
+            try:
+                doc["_id"] = str(doc["_id"])
+                doc["project_id"] = str(doc["project_id"])
 
-        images.append(ImagePublic(**doc))
-    return images
+                admin_info = await get_admin_info_by_id(doc.get("admin_id"))
+                project_info = await get_project_info_by_id(doc["project_id"])
+
+                if admin_info:
+                    doc["admin"] = admin_info
+                if project_info:
+                    doc["project"] = project_info
+
+                images.append(ImagePublic(**doc))
+            except Exception:
+                continue
+
+        return images
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch images: {str(e)}")
+
+
+@router.get("/images/search")
+async def search_images(q: str):
+    try:
+        if not q or not q.strip():
+            raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+        query_lower = q.strip().lower()
+
+        images = []
+        cursor = image_collection.find({})
+
+        async for doc in cursor:
+            try:
+                matches = False
+
+                # Very lenient matching - just check if query word appears anywhere
+                if doc.get("title") and query_lower in doc["title"].lower():
+                    matches = True
+
+                if doc.get("ai_generated_caption") and query_lower in doc["ai_generated_caption"].lower():
+                    matches = True
+
+                # Check tags
+                if doc.get("tags"):
+                    for tag in doc["tags"]:
+                        if query_lower in tag.lower():
+                            matches = True
+                            break
+
+                if matches:
+                    doc["_id"] = str(doc["_id"])
+                    doc["project_id"] = str(doc["project_id"])
+
+                    admin_info = await get_admin_info_by_id(doc.get("admin_id"))
+                    project_info = await get_project_info_by_id(doc["project_id"])
+
+                    if admin_info:
+                        doc["admin"] = admin_info
+                    if project_info:
+                        doc["project"] = project_info
+
+                    images.append(ImagePublic(**doc))
+            except Exception as e:
+                print(f"Error processing image: {e}")
+                continue
+
+        return images
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
 
 @router.get("/images/{id}")
 async def get_image(id: str):
@@ -103,6 +175,67 @@ async def ai_preview_image(file: UploadFile = File(...)):
             os.remove(temp_path)
 
     return {"caption": caption, "tags": tags}
+
+
+@router.get("/images/{id}/similar")
+async def get_similar_images(id: str, limit: int = 3):
+    if not ObjectId.is_valid(id):
+        raise HTTPException(status_code=400, detail="Invalid image ID")
+
+    target_image = await image_collection.find_one({"_id": ObjectId(id)})
+    if not target_image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    target_tags = set(target_image.get("tags", []))
+
+    cursor = image_collection.find({
+        "project_id": target_image["project_id"],
+        "_id": {"$ne": ObjectId(id)}
+    })
+
+    similarities = []
+
+    async for img in cursor:
+        img_tags = set(img.get("tags", []))
+
+        if target_tags or img_tags:
+            tag_sim = len(target_tags & img_tags) / max(len(target_tags | img_tags), 1)
+        else:
+            tag_sim = 0.0
+
+        embedding_sim = 0.0
+        if target_image.get("embeddings") and img.get("embeddings"):
+            target_embedding = np.array(target_image["embeddings"], dtype=np.float32)
+            img_embedding = np.array(img["embeddings"], dtype=np.float32)
+
+            target_embedding /= np.linalg.norm(target_embedding)
+            img_embedding /= np.linalg.norm(img_embedding)
+
+            embedding_sim = float(np.dot(target_embedding, img_embedding))
+
+        final_score = 0.7 * tag_sim + 0.3 * embedding_sim
+
+        similarities.append((img, final_score))
+
+    similarities.sort(key=lambda x: x[1], reverse=True)
+
+    results = []
+    for img, _ in similarities[:limit]:
+        img["_id"] = str(img["_id"])
+        img["project_id"] = str(img["project_id"])
+
+        admin_info = await get_admin_info_by_id(img.get("admin_id"))
+        project_info = await get_project_info_by_id(img["project_id"])
+
+        if admin_info:
+            img["admin"] = admin_info
+        if project_info:
+            img["project"] = project_info
+
+        results.append(ImagePublic(**img))
+
+    return results
+
 
 @router.post("/images/{project_id}")
 async def upload_image(
@@ -177,6 +310,7 @@ async def upload_image(
         image_doc["project"] = project_info
 
     return ImagePublic(**image_doc)
+
 
 @router.patch("/images/{id}")
 async def patch_image(

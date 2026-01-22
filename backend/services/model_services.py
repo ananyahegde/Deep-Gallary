@@ -126,6 +126,7 @@ def generate_caption(image_path: str) -> str:
         )
 
         return caption
+
     except FileNotFoundError:
         raise
     except Exception as e:
