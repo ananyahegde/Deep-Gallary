@@ -4,3 +4,4 @@
 backend/uploads/
 .env
 models/
+node_modules/
