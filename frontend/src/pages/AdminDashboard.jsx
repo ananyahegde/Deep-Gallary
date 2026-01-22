@@ -122,7 +122,7 @@ function AdminDashboard() {
           <div className="flex gap-2">
             <button
               onClick={editingProject ? updateProject : createProject}
-              className="bg-black text-white px-6 py-2 text-sm"
+              className="bg-black text-white px-6 py-2 text-sm rounded-xs hover:bg-gray-900"
             >
               {editingProject ? 'UPDATE' : 'CREATE'}
             </button>

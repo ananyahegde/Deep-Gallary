@@ -1,4 +1,9 @@
+import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+
 function Footer() {
+  const { user } = useAuth();
+
   return (
     <footer className="bg-white border-t border-gray-200">
       <div className="max-w-7xl mx-auto px-6 lg:px-8 py-16">
@@ -12,9 +17,16 @@ function Footer() {
           <div>
             <h3 className="text-lg font-light mb-6 tracking-wider">Quick Links</h3>
             <ul className="space-y-3 text-sm text-gray-600">
-              <li><a href="/" className="hover:text-gray-900 transition">Home</a></li>
-              <li><a href="/explore" className="hover:text-gray-900 transition">Explore</a></li>
-              <li><a href="/login" className="hover:text-gray-900 transition">Login</a></li>
+              <li><Link to="/" className="hover:text-gray-900 transition">Home</Link></li>
+              <li><Link to="/explore" className="hover:text-gray-900 transition">Explore</Link></li>
+              {user ? (
+                <>
+                  <li><Link to="/admin" className="hover:text-gray-900 transition">Dashboard</Link></li>
+                  <li><Link to="/profile/edit" className="hover:text-gray-900 transition">Profile</Link></li>
+                </>
+              ) : (
+                <li><Link to="/login" className="hover:text-gray-900 transition">Login</Link></li>
+              )}
             </ul>
           </div>
           <div>

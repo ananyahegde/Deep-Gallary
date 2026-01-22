@@ -4,6 +4,8 @@ import { useAuth } from '../context/AuthContext';
 import { photographersAPI } from '../services/api';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
+import ImageCropModal from '../components/ImageCropModal';
+import { getCroppedImg } from '../utils/cropImage';
 
 function AdminProfile() {
   const { user, logout } = useAuth();
@@ -16,6 +18,8 @@ function AdminProfile() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [tempImageSrc, setTempImageSrc] = useState(null);
 
   useEffect(() => {
     if (!user) return;
@@ -30,8 +34,33 @@ function AdminProfile() {
   const handlePhotoChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setPhoto(file);
-    setPreview(URL.createObjectURL(file));
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setTempImageSrc(reader.result);
+      setCropModalOpen(true);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleCropComplete = async (croppedAreaPixels) => {
+    try {
+      const croppedBlob = await getCroppedImg(tempImageSrc, croppedAreaPixels);
+      const croppedFile = new File([croppedBlob], 'profile.jpg', { type: 'image/jpeg' });
+
+      setPhoto(croppedFile);
+      setPreview(URL.createObjectURL(croppedBlob));
+      setCropModalOpen(false);
+      setTempImageSrc(null);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to crop image');
+    }
+  };
+
+  const handleCropCancel = () => {
+    setCropModalOpen(false);
+    setTempImageSrc(null);
   };
 
   const updateProfile = async () => {
@@ -51,7 +80,6 @@ function AdminProfile() {
       await photographersAPI.update(formData);
       setSuccess('Profile updated successfully!');
 
-      // Refresh user data
       setTimeout(() => window.location.reload(), 1500);
     } catch (err) {
       setError('Failed to update profile');
@@ -77,7 +105,6 @@ function AdminProfile() {
         {error && <p className="text-sm text-red-600 mb-4">{error}</p>}
         {success && <p className="text-sm text-green-600 mb-4">{success}</p>}
 
-        {/* Profile Photo */}
         <div className="mb-8">
           <label className="text-sm tracking-wide text-gray-700 mb-2 block">
             PROFILE PHOTO
@@ -91,16 +118,22 @@ function AdminProfile() {
                 onError={(e) => e.target.src = '/default-profile.jpg'}
               />
             </div>
+            <label
+              htmlFor="profile-photo-upload"
+              className="cursor-pointer bg-white text-black border border-black px-5 py-3 text-sm rounded-sm hover:bg-gray-200 transition"
+            >
+              Change Photo
+            </label>
             <input
+              id="profile-photo-upload"
               type="file"
               accept="image/*"
               onChange={handlePhotoChange}
-              className="text-sm"
+              className="hidden"
             />
           </div>
         </div>
 
-        {/* Name */}
         <div className="mb-6">
           <label className="text-sm tracking-wide text-gray-700 mb-2 block">
             NAME
@@ -112,7 +145,6 @@ function AdminProfile() {
           />
         </div>
 
-        {/* Description */}
         <div className="mb-6">
           <label className="text-sm tracking-wide text-gray-700 mb-2 block">
             BIO
@@ -125,7 +157,6 @@ function AdminProfile() {
           />
         </div>
 
-        {/* Contact */}
         <div className="mb-8">
           <label className="text-sm tracking-wide text-gray-700 mb-2 block">
             CONTACT
@@ -138,7 +169,6 @@ function AdminProfile() {
           />
         </div>
 
-        {/* Read-only fields */}
         <div className="mb-6 pb-6 border-b border-gray-200">
           <p className="text-xs text-gray-500 mb-2">Username: {user.username}</p>
           <p className="text-xs text-gray-500">Email: {user.email}</p>
@@ -148,19 +178,27 @@ function AdminProfile() {
           <button
             onClick={updateProfile}
             disabled={uploading}
-            className="bg-black text-white px-8 py-3 text-sm disabled:opacity-50"
+            className="bg-black text-white px-8 py-3 text-sm rounded-sm  hover:bg-gray-900 disabled:opacity-50"
           >
             {uploading ? 'Updating...' : 'Save Changes'}
           </button>
           <button
-            onClick={() => navigate('/')}
-            className="border border-gray-300 px-8 py-3 text-sm"
+            onClick={() => navigate('/admin')}
+            className="border border-gray-300 px-8 py-3 text-sm  hover:bg-gray-200 rounded-sm"
           >
             Cancel
           </button>
         </div>
       </main>
       <Footer />
+
+      {cropModalOpen && tempImageSrc && (
+        <ImageCropModal
+          image={tempImageSrc}
+          onCropComplete={handleCropComplete}
+          onCancel={handleCropCancel}
+        />
+      )}
     </div>
   );
 }

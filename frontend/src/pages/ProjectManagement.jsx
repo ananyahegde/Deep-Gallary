@@ -232,32 +232,39 @@ function ProjectManagement() {
           {!editingImage ? (
             <>
               {/* File Upload */}
+
               {!selectedFile ? (
                 <div>
+                  <label
+                    htmlFor="file-upload"
+                    className="inline-block cursor-pointer bg-black text-white px-8 py-3 text-sm rounded-xs hover:bg-gray-900 transition"
+                  >
+                    Choose Image
+                  </label>
                   <input
                     type="file"
                     accept="image/*"
                     onChange={handleFileSelect}
-                    className="mb-4"
+                    className="hidden"
                     id="file-upload"
                   />
-                  <label
-                    htmlFor="file-upload"
-                    className="inline-block cursor-pointer bg-gray-100 border border-gray-300 px-6 py-3 text-sm hover:bg-gray-200 transition"
-                  >
-                    Choose Image
-                  </label>
                 </div>
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  {/* Preview */}
+                  {/* Preview with X button */}
                   <div>
-                    <div className="bg-gray-50 border border-gray-200 p-4 flex items-center justify-center" style={{ minHeight: '400px' }}>
+                    <div className="relative bg-gray-50 border border-gray-200 p-4 flex items-center justify-center" style={{ minHeight: '400px' }}>
                       <img
                         src={preview}
                         alt="Preview"
                         className="max-w-full max-h-[500px] object-contain"
                       />
+                      <button
+                        onClick={cancelUpload}
+                        className="absolute top-4 right-4 w-8 h-8 bg-black/70 hover:bg-black text-white rounded-full flex items-center justify-center transition"
+                      >
+                        ×
+                      </button>
                     </div>
 
                     {!showForm && (
@@ -280,10 +287,16 @@ function ProjectManagement() {
 
                     {showForm && (
                       <button
-                        onClick={cancelUpload}
+                        onClick={() => {
+                          setShowForm(false);
+                          setTitle('');
+                          setCaption('');
+                          setTags([]);
+                          setError('');
+                        }}
                         className="mt-4 text-sm text-gray-600 hover:text-gray-900"
                       >
-                        ← Choose Different Image
+                        ← Back to Options
                       </button>
                     )}
                   </div>
@@ -343,6 +356,7 @@ function ProjectManagement() {
                   )}
                 </div>
               )}
+
             </>
           ) : (
             /* Edit Form */
@@ -424,13 +438,13 @@ function ProjectManagement() {
                   <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
                     <button
                       onClick={() => startEditImage(img)}
-                      className="bg-white text-black px-3 py-1 text-sm"
+                      className="bg-gray-100 text-gray-700 px-3 py-1 text-sm rounded hover:bg-gray-200 transition flex items-center gap-1"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => deleteImage(img._id)}
-                      className="bg-red-600 text-white px-3 py-1 text-sm"
+                      className="bg-rose-50 text-rose-700 px-3 py-1 text-sm rounded hover:bg-rose-100 transition flex items-center gap-1"
                     >
                       Delete
                     </button>
