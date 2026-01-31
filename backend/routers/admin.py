@@ -228,6 +228,15 @@ async def patch_admin(
         await verify_unique_email(new_email)
         updated_data["email"] = new_email
 
+    if name and name != admin_doc.get("name"):
+        updated_data["name"] = name
+
+    if description is not None and description != admin_doc.get("description"):
+        updated_data["description"] = description
+
+    if contact and contact != admin_doc.get("contact"):
+        updated_data["contact"] = contact
+
     if photo:
         new_photo_path = await save_admin_profile_image(photo)
         if admin_doc.get("photo"):

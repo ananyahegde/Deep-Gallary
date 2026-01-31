@@ -12,8 +12,12 @@ function Navbar() {
       <div className="max-w-7xl mx-auto px-6 lg:px-8">
         <div className="flex justify-between items-center h-20">
           <div className="flex items-center space-x-12">
-            <Link to="/" className="text-2xl font-light tracking-wider text-gray-900">
-              Deep Gallary
+            <Link to="/" className="flex items-center">
+              <img
+                src="/logo.png"
+                alt="Deep Gallary"
+                className="h-8 -mt-2"
+              />
             </Link>
             <div className="hidden md:flex space-x-8">
               <Link to="/" className="text-sm tracking-wide text-gray-600 hover:text-gray-900 transition">
