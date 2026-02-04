@@ -26,6 +26,9 @@ function Navbar() {
               <Link to="/explore" className="text-sm tracking-wide text-gray-600 hover:text-gray-900 transition">
                 EXPLORE
               </Link>
+              <Link to="/images" className="text-sm tracking-wide text-gray-600 hover:text-gray-900 transition">
+                BROWSE
+              </Link>
             </div>
           </div>
 

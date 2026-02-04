@@ -10,6 +10,7 @@ import AdminDashboard from './pages/AdminDashboard';
 import ProjectManagement from './pages/ProjectManagement';
 import AdminProfile from './pages/AdminProfile';
 import SearchPage from './pages/SearchPage';
+import BrowsePage from './pages/BrowsePage';
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/project/:id/manage" element={<ProjectManagement />} />
             <Route path="/profile/edit" element={<AdminProfile />} />
+            <Route path="/images" element={<BrowsePage />} />
           </Routes>
         </div>
       </Router>
