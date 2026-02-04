@@ -189,7 +189,7 @@ async def get_similar_images(id: str, limit: int = 3):
     target_tags = set(target_image.get("tags", []))
 
     cursor = image_collection.find({
-        "project_id": target_image["project_id"],
+        "admin_id": target_image["admin_id"],
         "_id": {"$ne": ObjectId(id)}
     })
 
